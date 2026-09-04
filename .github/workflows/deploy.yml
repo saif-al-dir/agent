@@ -1,0 +1,49 @@
+name: Deploy to MyDevil
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Assemble bundle
+        run: |
+          mkdir -p public
+          cp -r .next/static .next/standalone/.next/static
+          cp -r public .next/standalone/public
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.MYDEVIL_SSH_KEY }}" > ~/.ssh/key
+          chmod 600 ~/.ssh/key
+          ssh-keyscan -H ${{ secrets.MYDEVIL_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy bundle
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/key" \
+            .next/standalone/ \
+            "${{ secrets.MYDEVIL_USER }}@${{ secrets.MYDEVIL_HOST }}:domains/agent.saif1.usermd.net/public_nodejs/bundle/"
+
+      - name: Deploy entry and restart
+        run: |
+          scp -i ~/.ssh/key app.js deploy/package.json \
+            "${{ secrets.MYDEVIL_USER }}@${{ secrets.MYDEVIL_HOST }}:domains/agent.saif1.usermd.net/public_nodejs/"
+          ssh -i ~/.ssh/key "${{ secrets.MYDEVIL_USER }}@${{ secrets.MYDEVIL_HOST }}" \
+            "devil www restart agent.saif1.usermd.net"
