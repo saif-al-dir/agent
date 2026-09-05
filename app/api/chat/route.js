@@ -1,7 +1,9 @@
 import { streamText, stepCountIs, createUIMessageStream, createUIMessageStreamResponse } from 'ai'
 import { openai } from '@ai-sdk/openai'
-import { webSearch, readPage } from '../../../lib/agent-tools'
-import { AGENT_SYSTEM } from '../../../lib/agent-prompt'
+import { webSearch, readPage } from '@/lib/agent-tools'
+import { AGENT_SYSTEM } from '@/lib/agent-prompt'
+import { createClient } from '@/lib/supabase/server'
+import { checkRateLimit } from '@/lib/rate-limit'
 
 // Approximate cost model (documented in README):
 // gpt-4o-mini $0.15/1M input + $0.60/1M output tokens · Tavily ~$0.005 per call
@@ -10,6 +12,27 @@ const LLM_OUT = 0.6
 const TOOL_CALL = 0.005
 
 export async function POST(req) {
+  // 1. Auth — access control on an expensive endpoint
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // 2. Rate limit — before any LLM/search work: a blocked user costs nothing
+  const rl = checkRateLimit(user.id)
+  if (!rl.allowed) {
+    const stream = createUIMessageStream({
+      execute: ({ writer }) => {
+        writer.write({
+          type: 'error',
+          errorText: `Rate limit reached — try again in ${rl.resetInMin} min.`,
+        })
+      },
+    })
+    const response = createUIMessageStreamResponse({ stream })
+    response.headers.set('X-Accel-Buffering', 'no')
+    return response
+  }
+
   const startedAt = Date.now()
   const { messages } = await req.json()
 
@@ -28,6 +51,12 @@ export async function POST(req) {
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
+      // Quota channel first — same data-part pattern as DocAI
+      writer.write({
+        type: 'data-quota',
+        data: { remaining: rl.remaining, resetInMin: rl.resetInMin },
+      })
+
       const result = streamText({
         model: openai('gpt-4o-mini'),
         system: AGENT_SYSTEM,
@@ -52,8 +81,6 @@ export async function POST(req) {
 
       writer.merge(result.toUIMessageStream())
 
-      // Per-run stats, shipped AFTER the answer completes (ordering: steps →
-      // answer → usage). Best-effort: an aborted run just skips the stats.
       try {
         const [usage, steps] = await Promise.all([result.usage, result.steps])
         const inputTokens = usage?.inputTokens ?? 0
