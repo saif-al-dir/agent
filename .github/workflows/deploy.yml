@@ -19,6 +19,9 @@ jobs:
         run: npm ci
 
       - name: Build
+        env:
+              NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+              NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: npm run build
 
       - name: Assemble bundle
@@ -41,15 +44,9 @@ jobs:
             .next/standalone/ \
             "${{ secrets.MYDEVIL_USER }}@${{ secrets.MYDEVIL_HOST }}:domains/agent.saif1.usermd.net/public_nodejs/bundle/"
 
-      - name: Deploy entry and restart
-        run: |
-          scp -i ~/.ssh/key app.js deploy/package.json \
+            - name: Deploy entry and restart
+            run: |
+            scp -i ~/.ssh/key app.js deploy/package.json \
             "${{ secrets.MYDEVIL_USER }}@${{ secrets.MYDEVIL_HOST }}:domains/agent.saif1.usermd.net/public_nodejs/"
-          ssh -i ~/.ssh/key "${{ secrets.MYDEVIL_USER }}@${{ secrets.MYDEVIL_HOST }}" \
+            ssh -i ~/.ssh/key "${{ secrets.MYDEVIL_USER }}@${{ secrets.MYDEVIL_HOST }}" \
             "devil www restart agent.saif1.usermd.net"
-
-      - name: Build
-        env:
-          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-        run: npm run build
