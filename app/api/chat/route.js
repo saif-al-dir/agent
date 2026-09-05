@@ -1,9 +1,16 @@
 import { streamText, stepCountIs, createUIMessageStream, createUIMessageStreamResponse } from 'ai'
 import { openai } from '@ai-sdk/openai'
-import { webSearch, readPage } from '../../../lib/agent-tools.js'
-import { AGENT_SYSTEM } from '../../../lib/agent-prompt.js'
+import { webSearch, readPage } from '../../../lib/agent-tools'
+import { AGENT_SYSTEM } from '../../../lib/agent-prompt'
+
+// Approximate cost model (documented in README):
+// gpt-4o-mini $0.15/1M input + $0.60/1M output tokens · Tavily ~$0.005 per call
+const LLM_IN = 0.15
+const LLM_OUT = 0.6
+const TOOL_CALL = 0.005
 
 export async function POST(req) {
+  const startedAt = Date.now()
   const { messages } = await req.json()
 
   const modelMessages = messages
@@ -16,38 +23,57 @@ export async function POST(req) {
     }))
     .filter((m) => m.content.length > 0)
 
+  let searches = 0
+  let reads = 0
+
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
-      // streamText starts lazily when consumed — creating it HERE guarantees
-      // onStepFinish always has the writer available (no lost early steps)
       const result = streamText({
         model: openai('gpt-4o-mini'),
         system: AGENT_SYSTEM,
         messages: modelMessages,
         tools: { webSearch, readPage },
-        stopWhen: stepCountIs(8), // circuit breaker
+        stopWhen: stepCountIs(8),
 
-        // Every completed step ships to the browser immediately as a data part
         onStepFinish: (step) => {
-          const calls = step.toolCalls ?? []
-          if (!calls.length) return // final text step — streams via the merged stream anyway
-          for (const call of calls) {
-            const result = (step.toolResults ?? []).find(
+          for (const call of step.toolCalls ?? []) {
+            if (call.toolName === 'webSearch') searches++
+            if (call.toolName === 'readPage') reads++
+            const output = (step.toolResults ?? []).find(
               (r) => r.toolCallId === call.toolCallId
             )?.output
             writer.write({
               type: 'data-steps',
-              data: {
-                tool: call.toolName,
-                input: call.input,
-                outcome: summarizeOutcome(result),
-              },
+              data: { tool: call.toolName, input: call.input, outcome: summarizeOutcome(output) },
             })
           }
         },
       })
 
       writer.merge(result.toUIMessageStream())
+
+      // Per-run stats, shipped AFTER the answer completes (ordering: steps →
+      // answer → usage). Best-effort: an aborted run just skips the stats.
+      try {
+        const [usage, steps] = await Promise.all([result.usage, result.steps])
+        const inputTokens = usage?.inputTokens ?? 0
+        const outputTokens = usage?.outputTokens ?? 0
+        const cost =
+          (inputTokens * LLM_IN + outputTokens * LLM_OUT) / 1_000_000 +
+          (searches + reads) * TOOL_CALL
+        writer.write({
+          type: 'data-usage',
+          data: {
+            steps: steps?.length ?? 0,
+            searches,
+            reads,
+            inputTokens,
+            outputTokens,
+            costUsd: Number(cost.toFixed(4)),
+            durationMs: Date.now() - startedAt,
+          },
+        })
+      } catch {}
     },
     onError: (error) => {
       console.error('[agent] stream error:', error)
