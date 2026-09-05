@@ -1,6 +1,12 @@
 import './globals.css'
 
-export const metadata = { title: 'Research Agent' }
+export const metadata = {
+    title: 'Research Agent',
+    description: 'It searches, reads, and answers — with sources.',
+    icons: {
+      icon: '/favicon.svg',
+    },
+}
 
 export default function RootLayout({ children }) {
   return (
