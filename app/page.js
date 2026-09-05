@@ -147,20 +147,27 @@ function UsageLine({ usage }) {
 }
 
 export default function Home() {
-  const [initialMessages] = useState(loadStoredMessages)
-  const { messages, sendMessage, status, stop, error, setMessages } = useChat({
-    messages: initialMessages,
-  })
+  const { messages, sendMessage, status, stop, error, setMessages } = useChat()
   const [input, setInput] = useState('')
   const bottomRef = useRef(null)
+
+  // Restore the stored session AFTER hydration: the server renders the empty
+  // state, this effect then swaps in localStorage data — so the client's first
+  // render always matches the server HTML. (Fixes hydration mismatch.)
+  useEffect(() => {
+    const stored = loadStoredMessages()
+    if (stored.length > 0) setMessages(stored)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Persist only when idle — writing per streamed token would thrash localStorage
+  // Persist only when idle — and never with an empty list, so we don't wipe
+  // storage during the one frame between mount and the restore effect above
   useEffect(() => {
-    if (status !== 'ready') return
+    if (status !== 'ready' || messages.length === 0) return
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(messages))
     } catch {}
